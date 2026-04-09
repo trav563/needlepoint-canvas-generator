@@ -1,0 +1,5 @@
+{
+  "name": "Needlepoint Canvas Generator",
+  "description": "A production tool for generating printable needlepoint canvas designs from themes, featuring deterministic stitch-grid conversion and print-ready exports.",
+  "requestFramePermissions": []
+}
