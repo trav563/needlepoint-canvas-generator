@@ -248,6 +248,152 @@ function runNeedlepointChecks(data: Buffer, width: number, height: number, chann
   };
 }
 
+/**
+ * Remove stray/isolated pixels from the stitch-resolution buffer.
+ * Phase A: Mode-filter pass (repeated) — replaces pixels with ≤1 same-color
+ *          4-connected neighbors with the most common color in their 3×3 neighborhood.
+ * Phase B: BFS flood-fill — merges any connected region smaller than minRegionSize
+ *          into its most common bordering color.
+ */
+function cleanStrayPixels(
+  data: Buffer,
+  width: number,
+  height: number,
+  channels: number,
+  iterations: number = 2,
+  minRegionSize: number = 3
+): Buffer {
+  const buf = Buffer.from(data);
+
+  const idx = (x: number, y: number) => (y * width + x) * channels;
+  const colorEq = (i: number, j: number) =>
+    buf[i] === buf[j] && buf[i + 1] === buf[j + 1] && buf[i + 2] === buf[j + 2];
+
+  // Phase A: Isolated-pixel mode filter
+  const dir4 = [[0, -1], [0, 1], [-1, 0], [1, 0]];
+
+  for (let iter = 0; iter < iterations; iter++) {
+    const snapshot = Buffer.from(buf); // read from snapshot, write to buf
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const ci = idx(x, y);
+
+        // Count 4-connected same-color neighbors
+        let sameCount = 0;
+        for (const [dx, dy] of dir4) {
+          const nx = x + dx, ny = y + dy;
+          if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+            if (colorEq(ci, idx(nx, ny))) sameCount++;
+          }
+        }
+
+        if (sameCount > 1) continue; // not isolated
+
+        // Collect colors from 3×3 neighborhood (excluding self)
+        const counts = new Map<string, { count: number; r: number; g: number; b: number }>();
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            const nx = x + dx, ny = y + dy;
+            if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+            const ni = (ny * width + nx) * channels;
+            const key = `${snapshot[ni]},${snapshot[ni + 1]},${snapshot[ni + 2]}`;
+            const entry = counts.get(key);
+            if (entry) {
+              entry.count++;
+            } else {
+              counts.set(key, { count: 1, r: snapshot[ni], g: snapshot[ni + 1], b: snapshot[ni + 2] });
+            }
+          }
+        }
+
+        // Replace with most common neighbor color
+        let best = { count: 0, r: 0, g: 0, b: 0 };
+        for (const v of counts.values()) {
+          if (v.count > best.count) best = v;
+        }
+        if (best.count > 0) {
+          buf[ci] = best.r;
+          buf[ci + 1] = best.g;
+          buf[ci + 2] = best.b;
+        }
+      }
+    }
+  }
+
+  // Phase B: BFS flood-fill to merge tiny regions
+  const visited = new Uint8Array(width * height);
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const pi = y * width + x;
+      if (visited[pi]) continue;
+
+      // BFS to find connected region (4-connected)
+      const region: number[] = [];
+      const queue: number[] = [pi];
+      visited[pi] = 1;
+      const ci = idx(x, y);
+      const cr = buf[ci], cg = buf[ci + 1], cb = buf[ci + 2];
+
+      while (queue.length > 0) {
+        const cur = queue.pop()!;
+        region.push(cur);
+        const cx = cur % width, cy = (cur - cx) / width;
+
+        for (const [dx, dy] of dir4) {
+          const nx = cx + dx, ny = cy + dy;
+          if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+          const ni = ny * width + nx;
+          if (visited[ni]) continue;
+          const nci = ni * channels;
+          if (buf[nci] === cr && buf[nci + 1] === cg && buf[nci + 2] === cb) {
+            visited[ni] = 1;
+            queue.push(ni);
+          }
+        }
+      }
+
+      if (region.length >= minRegionSize) continue;
+
+      // Find the most common bordering color
+      const borderCounts = new Map<string, { count: number; r: number; g: number; b: number }>();
+      for (const pi of region) {
+        const cx = pi % width, cy = (pi - cx) / width;
+        for (const [dx, dy] of dir4) {
+          const nx = cx + dx, ny = cy + dy;
+          if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+          const nci = (ny * width + nx) * channels;
+          if (buf[nci] === cr && buf[nci + 1] === cg && buf[nci + 2] === cb) continue;
+          const key = `${buf[nci]},${buf[nci + 1]},${buf[nci + 2]}`;
+          const entry = borderCounts.get(key);
+          if (entry) {
+            entry.count++;
+          } else {
+            borderCounts.set(key, { count: 1, r: buf[nci], g: buf[nci + 1], b: buf[nci + 2] });
+          }
+        }
+      }
+
+      let best = { count: 0, r: cr, g: cg, b: cb };
+      for (const v of borderCounts.values()) {
+        if (v.count > best.count) best = v;
+      }
+
+      // Replace all pixels in this tiny region
+      for (const pi of region) {
+        const pci = pi * channels;
+        buf[pci] = best.r;
+        buf[pci + 1] = best.g;
+        buf[pci + 2] = best.b;
+      }
+    }
+  }
+
+  return buf;
+}
+
 async function simplifyBeforeStitchConversion(buffer: Buffer, targetWidth: number, targetHeight: number) {
   const metadata = await sharp(buffer).metadata();
   const origWidth = metadata.width || 1024;
@@ -566,22 +712,27 @@ async function startServer() {
         monogramImagePrompt = ` prominently featuring the monogram "${monogram}" in bold, readable typography,`;
       }
       
-      const prompt = `You are an expert needlepoint canvas designer.
+      const prompt = `You are an expert needlepoint canvas designer creating designs in the style of modern boutique needlepoint shops (like KC Needlepoint and Atlantic Blue Canvas).
       Generate 8 distinct design concepts for a needlepoint canvas based on the user's theme: "${theme}".
       Style: ${style}, Shape: ${shape}, Complexity: ${complexity}, Mesh: ${meshCount}, Max Colors: ${maxColors}.${monogramInstruction}
-      
-      CRITICAL REQUIREMENTS for needlepoint:
-      - Designs MUST use FLAT, SOLID color fills only. NO gradients, NO shading, NO anti-aliasing, NO soft edges.
-      - Every color region must have HARD, PIXEL-PERFECT boundaries.
-      - Minimum shape size: at least 4 stitches (pixels) in any dimension. No fine lines or tiny details.
-      - Favor LARGE contiguous color blocks. Think of it like a simplified mosaic.
-      - No photorealism, no painterly effects, no textures within color regions.
-      - The image must NOT contain any visible grid lines, grid overlay, or crosshatch pattern. Just solid color regions on a clean background.
-      - Avoid small text, lettering, or signage — it will not be readable at needlepoint resolution.
+
+      AESTHETIC DIRECTION:
+      - Contemporary preppy style with bold, saturated, high-contrast colors.
+      - Think screen-printed poster art, cut-paper collage, or paint-by-number — every shape is one solid uniform color from edge to edge.
+      - Large, chunky, simplified shapes. Minimum shape size: 4 stitches (pixels) in any dimension.
+      - Whimsical, graphic, and witty — modern and fun, not old-fashioned.
+      - Clean white or solid-color background.
+
+      HARD RULES:
+      - FLAT, SOLID color fills ONLY. NO gradients, NO shading, NO anti-aliasing, NO soft edges, NO textures.
+      - Every color region must have HARD, CRISP boundaries — like cut paper with no blending.
+      - NO visible grid lines, grid overlay, or crosshatch pattern.
+      - NO small text, lettering, or signage — it will not be readable at needlepoint resolution.
+      - NO photorealism, NO painterly effects.
 
       Return a JSON array of 8 objects. Each object must have:
       - "title": A catchy title.
-      - "imagePrompt": A detailed prompt for an image generation model. MUST start with: "A bold, flat, simplified illustration depicting...". MUST include: "exactly ${maxColors} distinct solid colors, solid uniform color fills, NO gradients, NO shading, NO anti-aliasing, NO soft edges, NO grid lines, NO grid overlay, NO crosshatch pattern, NO visible pixel grid, hard pixel-perfect boundaries between all color regions, every shape at least 4 grid squares wide, bold simplified graphic design, clean white background, no small text or lettering."${monogramImagePrompt ? ` MUST include: "${monogramImagePrompt.trim()}"` : ""}
+      - "imagePrompt": A detailed prompt for an image generation model. MUST start with: "A bold screen-printed poster illustration depicting...". MUST include: "rendered as flat cut-paper collage with exactly ${maxColors} solid saturated colors, every shape filled with one uniform color, hard crisp edges between all color regions, no gradients, no shading, no anti-aliasing, no soft edges, no textures, large chunky simplified shapes (minimum 4 pixels wide), high-contrast contemporary graphic design, clean white background, paint-by-number style with distinct color boundaries, no grid lines, no grid overlay, no crosshatch pattern, no visible pixel grid."${monogramImagePrompt ? ` MUST include: "${monogramImagePrompt.trim()}"` : ""}
       - "needlepointabilityScore": Integer 0-100. (Higher for simpler, bolder designs with large color blocks).
       - "warnings": Array of strings (e.g., "Details may be lost on 13 mesh").
       - "badges": Array of strings (choose 1-3 from: "Beginner Friendly", "Best on 13 Mesh", "Best on 18 Mesh", "High Contrast", "Detail Heavy").
@@ -735,8 +886,11 @@ async function startServer() {
       const { data: quantizedData, info: quantizedInfo } = await sharp(quantizedBuffer).raw().toBuffer({ resolveWithObject: true });
       const { remappedData, colorMap: dmcColorMap } = remapBufferToDmc(quantizedData, quantizedInfo.width, quantizedInfo.height, quantizedInfo.channels);
 
-      // Rebuild the PNG from DMC-remapped pixel data
-      const resizedBuffer = await sharp(remappedData, {
+      // Clean stray/isolated pixels from the DMC-remapped stitch grid
+      const cleanedData = cleanStrayPixels(remappedData, quantizedInfo.width, quantizedInfo.height, quantizedInfo.channels);
+
+      // Rebuild the PNG from cleaned pixel data
+      const resizedBuffer = await sharp(cleanedData, {
         raw: { width: quantizedInfo.width, height: quantizedInfo.height, channels: quantizedInfo.channels }
       }).png().toBuffer();
 
