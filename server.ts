@@ -724,16 +724,30 @@ async function startServer() {
         monogramImagePrompt = ` prominently featuring the monogram "${monogram}" in bold, readable typography,`;
       }
       
+      // Calculate stitch dimensions so the AI knows the actual resolution
+      const designStitchesWide = Math.round(parseFloat(finishedWidth) * parseInt(meshCount));
+      const designStitchesHigh = Math.round(parseFloat(finishedHeight) * parseInt(meshCount));
+      const minDimension = Math.min(designStitchesWide, designStitchesHigh);
+      const minShapeSize = Math.max(6, Math.round(minDimension * 0.12));
+
       const prompt = `You are an expert needlepoint canvas designer creating designs in the style of modern boutique needlepoint shops (like KC Needlepoint and Atlantic Blue Canvas).
       Generate 8 distinct design concepts for a needlepoint canvas based on the user's theme: "${theme}".
       Style: ${style}, Shape: ${shape}, Complexity: ${complexity}, Mesh: ${meshCount}, Max Colors: ${maxColors}.${monogramInstruction}
 
+      CRITICAL RESOLUTION CONSTRAINT:
+      The finished design will be only ${designStitchesWide} x ${designStitchesHigh} stitches (pixels).
+      Think of this as a ${designStitchesWide} x ${designStitchesHigh} pixel image.
+      Every recognizable element MUST be at least ${minShapeSize} stitches (pixels) across in BOTH dimensions.
+      If an element cannot be drawn recognizably in a ${minShapeSize}x${minShapeSize} pixel area, either make it MUCH bigger or leave it out entirely.
+      Do NOT include small garnishes, decorative accents, thin lines, or fine details — they will become unrecognizable blobs.
+
       AESTHETIC DIRECTION:
       - Contemporary preppy style with bold, saturated, high-contrast colors.
       - Think screen-printed poster art, cut-paper collage, or paint-by-number — every shape is one solid uniform color from edge to edge.
-      - Large, chunky, simplified shapes. Minimum shape size: 4 stitches (pixels) in any dimension.
+      - Large, chunky, extremely simplified shapes. Every element must be clearly recognizable at ${designStitchesWide}x${designStitchesHigh} pixel resolution.
       - Whimsical, graphic, and witty — modern and fun, not old-fashioned.
       - Clean white or solid-color background.
+      - Fewer, bigger elements are ALWAYS better than many small ones.
 
       HARD RULES:
       - FLAT, SOLID color fills ONLY. NO gradients, NO shading, NO anti-aliasing, NO soft edges, NO textures.
@@ -741,10 +755,11 @@ async function startServer() {
       - NO visible grid lines, grid overlay, or crosshatch pattern.
       - NO small text, lettering, or signage — it will not be readable at needlepoint resolution.
       - NO photorealism, NO painterly effects.
+      - NO small decorative details (garnishes, thin stems, small accessories) — they will be lost.
 
       Return a JSON array of 8 objects. Each object must have:
       - "title": A catchy title.
-      - "imagePrompt": A detailed prompt for an image generation model. MUST start with: "A bold screen-printed poster illustration depicting...". MUST include: "rendered as flat cut-paper collage with exactly ${maxColors} solid saturated colors, every shape filled with one uniform color, hard crisp edges between all color regions, no gradients, no shading, no anti-aliasing, no soft edges, no textures, large chunky simplified shapes (minimum 4 pixels wide), high-contrast contemporary graphic design, clean white background, paint-by-number style with distinct color boundaries, no grid lines, no grid overlay, no crosshatch pattern, no visible pixel grid."${monogramImagePrompt ? ` MUST include: "${monogramImagePrompt.trim()}"` : ""}
+      - "imagePrompt": A detailed prompt for an image generation model. MUST start with: "A bold screen-printed poster illustration depicting...". MUST include: "rendered as flat cut-paper collage with exactly ${maxColors} solid saturated colors, every shape filled with one uniform color, hard crisp edges between all color regions, no gradients, no shading, no anti-aliasing, no soft edges, no textures, designed to be recognizable at ${designStitchesWide}x${designStitchesHigh} pixel resolution, extremely simplified chunky shapes (minimum ${minShapeSize} pixels wide), no small details or garnishes, high-contrast contemporary graphic design, clean white background, paint-by-number style with distinct color boundaries, no grid lines, no grid overlay, no crosshatch pattern, no visible pixel grid."${monogramImagePrompt ? ` MUST include: "${monogramImagePrompt.trim()}"` : ""}
       - "needlepointabilityScore": Integer 0-100. (Higher for simpler, bolder designs with large color blocks).
       - "warnings": Array of strings (e.g., "Details may be lost on 13 mesh").
       - "badges": Array of strings (choose 1-3 from: "Beginner Friendly", "Best on 13 Mesh", "Best on 18 Mesh", "High Contrast", "Detail Heavy").
