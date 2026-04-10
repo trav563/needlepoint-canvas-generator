@@ -151,7 +151,8 @@ export default function DesignDetailModal({ concept, onClose, onExport }: Design
               ) : (
                 <div className={cn(
                   "p-4",
-                  zoomLevel <= 1 && "flex items-center justify-center w-full h-full"
+                  zoomLevel <= 1 && "flex items-center justify-center w-full h-full",
+                  zoomLevel > 1 && "inline-block min-w-full min-h-full"
                 )}>
                   <img
                     src={

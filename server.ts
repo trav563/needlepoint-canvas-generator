@@ -472,84 +472,96 @@ async function renderPaintedCanvasPreview(rawStitchBuffer: Buffer, width: number
   const { data, info } = await sharp(rawStitchBuffer).raw().toBuffer({ resolveWithObject: true });
   const channels = info.channels;
 
+  // Mesh color for blending
+  const meshR = 220, meshG = 215, meshB = 205;
+  const meshBlend = 0.35; // how much mesh color shows through in gap pixels
+
   // Build the preview by direct pixel manipulation
   const outputChannels = 4; // RGBA
   const output = Buffer.alloc(scaledWidth * scaledHeight * outputChannels, 0);
 
-  // Fill background with light canvas color (simulates bare mesh)
+  // Fill background with canvas mesh color
   for (let i = 0; i < output.length; i += outputChannels) {
-    output[i] = 220;     // R
-    output[i + 1] = 215; // G
-    output[i + 2] = 205; // B
-    output[i + 3] = 255; // A
+    output[i] = meshR;
+    output[i + 1] = meshG;
+    output[i + 2] = meshB;
+    output[i + 3] = 255;
   }
 
-  // Draw each stitch as a filled square with gap for mesh holes
+  // Helper: get stitch color at grid position (clamped)
+  const getStitch = (sx: number, sy: number) => {
+    sx = Math.max(0, Math.min(width - 1, sx));
+    sy = Math.max(0, Math.min(height - 1, sy));
+    const i = (sy * width + sx) * channels;
+    return [data[i], data[i + 1], data[i + 2]];
+  };
+
+  // Draw each stitch as a filled square, with gap pixels blended
   for (let sy = 0; sy < height; sy++) {
     for (let sx = 0; sx < width; sx++) {
-      const srcIdx = (sy * width + sx) * channels;
-      const r = data[srcIdx];
-      const g = data[srcIdx + 1];
-      const b = data[srcIdx + 2];
+      const [r, g, b] = getStitch(sx, sy);
 
-      // Fill the stitch square (leave gap pixels as background)
-      for (let py = 0; py < stitchSize; py++) {
-        for (let px = 0; px < stitchSize; px++) {
+      for (let py = 0; py < previewScale; py++) {
+        for (let px = 0; px < previewScale; px++) {
           const outX = sx * previewScale + px;
           const outY = sy * previewScale + py;
+          if (outX >= scaledWidth || outY >= scaledHeight) continue;
           const outIdx = (outY * scaledWidth + outX) * outputChannels;
-          output[outIdx] = r;
-          output[outIdx + 1] = g;
-          output[outIdx + 2] = b;
+
+          const isGapX = px === stitchSize; // right edge gap
+          const isGapY = py === stitchSize; // bottom edge gap
+
+          if (!isGapX && !isGapY) {
+            // Interior stitch pixel — solid color
+            output[outIdx] = r;
+            output[outIdx + 1] = g;
+            output[outIdx + 2] = b;
+          } else {
+            // Gap pixel — blend stitch color with mesh color for subtle mesh look
+            output[outIdx] = Math.round(r * (1 - meshBlend) + meshR * meshBlend);
+            output[outIdx + 1] = Math.round(g * (1 - meshBlend) + meshG * meshBlend);
+            output[outIdx + 2] = Math.round(b * (1 - meshBlend) + meshB * meshBlend);
+          }
           output[outIdx + 3] = 255;
         }
       }
     }
   }
 
-  // Draw small dots at thread intersections (canvas holes)
-  for (let sy = 0; sy <= height; sy++) {
-    for (let sx = 0; sx <= width; sx++) {
-      const cx = sx * previewScale - 1;
-      const cy = sy * previewScale - 1;
-      // Draw a 2x2 dark dot at each intersection
-      for (let dy = 0; dy < 2; dy++) {
-        for (let dx = 0; dx < 2; dx++) {
-          const px = cx + dx;
-          const py = cy + dy;
-          if (px >= 0 && px < scaledWidth && py >= 0 && py < scaledHeight) {
-            const idx = (py * scaledWidth + px) * outputChannels;
-            output[idx] = 80;
-            output[idx + 1] = 75;
-            output[idx + 2] = 70;
-            output[idx + 3] = 255;
-          }
-        }
+  // Draw subtle dots at mesh intersections (where 4 stitches meet)
+  for (let sy = 1; sy < height; sy++) {
+    for (let sx = 1; sx < width; sx++) {
+      const px = sx * previewScale - 1;
+      const py = sy * previewScale - 1;
+      if (px >= 0 && px < scaledWidth && py >= 0 && py < scaledHeight) {
+        const idx = (py * scaledWidth + px) * outputChannels;
+        // Darken slightly for mesh hole effect
+        output[idx] = Math.round(output[idx] * 0.7);
+        output[idx + 1] = Math.round(output[idx + 1] * 0.7);
+        output[idx + 2] = Math.round(output[idx + 2] * 0.7);
       }
     }
   }
 
-  // Thicker grid lines every 10 stitches
+  // Subtle guide lines every 10 stitches (for counting)
   for (let s = 10; s < width; s += 10) {
     const x = s * previewScale;
+    if (x >= scaledWidth) continue;
     for (let y = 0; y < scaledHeight; y++) {
       const idx = (y * scaledWidth + x) * outputChannels;
-      if (x < scaledWidth) {
-        output[idx] = 60;
-        output[idx + 1] = 60;
-        output[idx + 2] = 60;
-        output[idx + 3] = 180;
-      }
+      output[idx] = Math.round(output[idx] * 0.75);
+      output[idx + 1] = Math.round(output[idx + 1] * 0.75);
+      output[idx + 2] = Math.round(output[idx + 2] * 0.75);
     }
   }
   for (let s = 10; s < height; s += 10) {
     const y = s * previewScale;
+    if (y >= scaledHeight) continue;
     for (let x = 0; x < scaledWidth; x++) {
       const idx = (y * scaledWidth + x) * outputChannels;
-      output[idx] = 60;
-      output[idx + 1] = 60;
-      output[idx + 2] = 60;
-      output[idx + 3] = 180;
+      output[idx] = Math.round(output[idx] * 0.75);
+      output[idx + 1] = Math.round(output[idx + 1] * 0.75);
+      output[idx + 2] = Math.round(output[idx + 2] * 0.75);
     }
   }
 
