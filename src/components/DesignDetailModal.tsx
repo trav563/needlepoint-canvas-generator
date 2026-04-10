@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import { DesignConcept } from '../App';
-import { X, Download, AlertTriangle, Palette, Ruler, Grid3x3, FileImage, FileText, FileArchive, ZoomIn, ZoomOut } from 'lucide-react';
+import { X, Download, AlertTriangle, Palette, Ruler, Grid3x3, FileImage, FileText, FileArchive, ZoomIn, ZoomOut, Move } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 interface DesignDetailModalProps {
@@ -13,6 +13,37 @@ export default function DesignDetailModal({ concept, onClose, onExport }: Design
   const [activeTab, setActiveTab] = useState<'art' | 'grid' | 'painted'>('art');
   const [zoomLevel, setZoomLevel] = useState<number>(1);
   const isProcessed = !!concept.rawStitchData;
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStart = useRef<{ x: number; y: number; scrollLeft: number; scrollTop: number }>({ x: 0, y: 0, scrollLeft: 0, scrollTop: 0 });
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    if (zoomLevel <= 1) return;
+    const container = containerRef.current;
+    if (!container) return;
+    setIsDragging(true);
+    dragStart.current = {
+      x: e.clientX,
+      y: e.clientY,
+      scrollLeft: container.scrollLeft,
+      scrollTop: container.scrollTop,
+    };
+    e.preventDefault();
+  }, [zoomLevel]);
+
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    if (!isDragging) return;
+    const container = containerRef.current;
+    if (!container) return;
+    const dx = e.clientX - dragStart.current.x;
+    const dy = e.clientY - dragStart.current.y;
+    container.scrollLeft = dragStart.current.scrollLeft - dx;
+    container.scrollTop = dragStart.current.scrollTop - dy;
+  }, [isDragging]);
+
+  const handleMouseUp = useCallback(() => {
+    setIsDragging(false);
+  }, []);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6">
@@ -99,14 +130,29 @@ export default function DesignDetailModal({ concept, onClose, onExport }: Design
             </div>
 
             {/* Image Container */}
-            <div className="flex-1 flex items-center justify-center bg-neutral-200/50 rounded-xl border border-neutral-200 overflow-auto relative min-h-[400px]">
+            <div
+              ref={containerRef}
+              className={cn(
+                "flex-1 bg-neutral-200/50 rounded-xl border border-neutral-200 overflow-auto relative min-h-[400px]",
+                zoomLevel <= 1 && "flex items-center justify-center",
+                zoomLevel > 1 && isDragging && "cursor-grabbing",
+                zoomLevel > 1 && !isDragging && "cursor-grab"
+              )}
+              onMouseDown={handleMouseDown}
+              onMouseMove={handleMouseMove}
+              onMouseUp={handleMouseUp}
+              onMouseLeave={handleMouseUp}
+            >
               {!isProcessed && activeTab !== 'art' ? (
                 <div className="flex flex-col items-center text-neutral-500">
                   <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600 mb-4"></div>
                   <p>Processing design...</p>
                 </div>
               ) : (
-                <div className="flex items-center justify-center w-full h-full p-4">
+                <div className={cn(
+                  "p-4",
+                  zoomLevel <= 1 && "flex items-center justify-center w-full h-full"
+                )}>
                   <img
                     src={
                       activeTab === 'art' ? concept.imageUrl :
@@ -115,15 +161,24 @@ export default function DesignDetailModal({ concept, onClose, onExport }: Design
                     }
                     alt={`${activeTab} preview`}
                     className={cn(
-                      "max-w-full max-h-full object-contain transition-transform duration-200 origin-center",
+                      "object-contain select-none",
+                      zoomLevel <= 1 && "max-w-full max-h-full",
                       activeTab !== 'art' && "pixelated"
                     )}
                     style={{
                       imageRendering: activeTab !== 'art' ? 'pixelated' : 'auto',
-                      transform: activeTab !== 'art' ? `scale(${zoomLevel})` : 'none'
+                      width: activeTab !== 'art' && zoomLevel > 1 ? `${zoomLevel * 100}%` : undefined,
+                      height: activeTab !== 'art' && zoomLevel > 1 ? 'auto' : undefined,
                     }}
+                    draggable={false}
                     referrerPolicy="no-referrer"
                   />
+                </div>
+              )}
+              {zoomLevel > 1 && (
+                <div className="sticky bottom-2 left-1/2 -translate-x-1/2 inline-flex items-center gap-1 bg-black/60 text-white text-xs px-2 py-1 rounded-full pointer-events-none w-fit mx-auto">
+                  <Move className="w-3 h-3" />
+                  Click & drag to pan
                 </div>
               )}
             </div>
